@@ -1,0 +1,84 @@
+#Title:       AWS tomcat rolling deploy
+#Description: Designed to do rolling deployments against environments done in a less than ideal way.
+#             This is useful for redundnant environments that are not designed for auto-scalling (no image)
+#             Vendor products (solutions... *shutters*) would also fall into this realm
+#             This is all it does:
+#             Discovers nodes on an ALB/Target group, deregisters an ec2 Instance,
+#             Deploys the code, reenable the instance.. rinse and repeat
+
+#FYI          This will delete anyting in place that matches the intended remote directory
+
+#PRE-REQs/limitations
+#Works for only tomcat right now
+#AWS CLI INSTALLED on the box deploying the code
+#PROFILE in AWS CLI needs to be configured with permissions to ALB/EC2
+#Script must be executed in the same directory as the package that is being deployed
+#Remote SSH user has to be created on target nodes
+#Remote SSH user probably needs some sort of sudo configuration
+#unless you're an idiot and using root
+
+#-----------------------------
+#Required Arguments
+#AWS profile used to connect to the aws API
+PROFILE="$1"
+#Environment tier, used to searches to find the right ALB
+ENVIRONMENT="$2"
+#Package to deployed (path to war to be deployed)
+PACKAGE="$3"
+#Destination Directory on the remote server
+DESTINATION="$4"
+
+#------------------------------
+#General Configuration
+SSH_USER='quickbuild'
+STAGING_DIRECTORY='/tmp/'
+SLEEP_SECONDS=15
+STOP_COMMAND='sudo service tomcat stop'
+START_COMMAND='sudo service tomcat start'
+
+#------------------------------
+#Static CLI Paths (you may need to adjust these as the pathes may differ...)
+#Been burned by too many admins/devs breaking paths
+CAT='/bin/cat'
+AWS='/usr/bin/aws'
+GREP='/bin/grep'
+ECHO='/bin/echo'
+#With IPs changing all the time in AWS, we're not going to check the ssh key
+SSH="/usr/bin/ssh -o StrictHostKeyChecking=no"  
+SCP="/usr/bin/scp -o StrictHostKeyChecking=no"  
+AWK='/bin/awk'
+SLEEP='/bin/sleep'
+TR='/usr/bin/tr'
+
+#pulls target group ARN
+TARGET_GROUP_ARN=`$AWS elbv2 describe-target-groups --profile $PROFILE --output json | $GREP -i $ENVIRONMENT\
+ | $GREP TargetGroupArn | $AWK -F "\"" '{print $4}'`
+
+#Pulls a list of nodes that need to be deployed to
+LIST_OF_EC2_INSTANCES=`$AWS elbv2 describe-target-health --profile $PROFILE  \
+  --output json --target-group-arn $TARGET_GROUP_ARN | $GREP "\"Id\"" | \
+  $AWK -F "\"" '{print $4}'`
+
+PACKAGE_NO_PATH=`$ECHO $PACKAGE | $AWK -F '/' '{print $2}'`
+#Begin deploy
+for EC2_ID in $LIST_OF_EC2_INSTANCES; do
+  $AWS elbv2 deregister-targets --target-group-arn ${TARGET_GROUP_ARN} --targets Id=$EC2_ID \
+    --profile $PROFILE --output json
+  #Give the node a chance to drain connections
+  $SLEEP $SLEEP_SECONDS
+  EC2_IP=`$AWS ec2 describe-instances --instance-ids ${EC2_ID}  --profile $PROFILE \
+    --output json | $GREP "PrivateIpAddresses" -A 10 \
+    | $GREP "PrivateIpAddress" | $AWK -F "\"" '{print $4}' | $TR -d "[:blank:]" |\
+    $TR -d "[:space:]"`
+
+  $SCP $PACKAGE ${SSH_USER}@${EC2_IP}:${STAGING_DIRECTORY}
+  $SSH ${SSH_USER}@${EC2_IP} "${STOP_COMMAND}"
+  PACKAGE_NO_EXTENSION=`$ECHO $PACKAGE_NO_PATH | $AWK -F '.' '{print $1}'`
+  $SSH ${SSH_USER}@${EC2_IP} "sudo -u tomcat /bin/rm -rf /opt/tomcat/webapps/${PACKAGE_NO_EXTENSION}*"
+  $SSH ${SSH_USER}@${EC2_IP} "sudo -u tomcat cp /tmp/${PACKAGE_NO_PATH} ${DESTINATION}"
+  $SSH ${SSH_USER}@${EC2_IP} "${START_COMMAND} && sudo -u tomcat /opt/tomcat/bin/waitForTomcat.sh"
+  $AWS elbv2 register-targets --target-group-arn $TARGET_GROUP_ARN --targets Id=${EC2_ID}\
+    --profile $PROFILE --output json
+  #Give AWS a chance to accept the node back on the balancer
+  $SLEEP $SLEEP_SECONDS
+done
