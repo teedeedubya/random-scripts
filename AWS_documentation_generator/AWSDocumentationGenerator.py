@@ -19,13 +19,13 @@ logging.basicConfig()
 logger = logging.getLogger('logger')
 
 
-session = boto3.Session(profile_name='psr-devtest', region_name='us-east-1')
+session = boto3.Session(profile_name='REPLACE WITH AWS KEY ALIAS', region_name='us-east-1')
 
 regions = session.get_available_regions('ec2')
 
 
 confluence = Confluence(
-            url='https://confluence-test.telligen.com',
+            url='https://confluence.example.com',
             username='twelder',
             password='*******************')
 
@@ -95,7 +95,7 @@ for region in regions:
 confluenceHTML += "</tbody></table></div>"
 print(confluenceHTML)
 status = confluence.update_or_create(
-    parent_id='42369035',
+    parent_id='REPLACE WITH PARENT PAGE ID',
     title='AWS Asset Inventory / Server List',
     body=confluenceHTML)
 print(status)
