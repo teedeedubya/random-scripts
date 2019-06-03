@@ -1,1 +1,3 @@
 # random-scripts
+
+- just a bunch of random scripts I wrote over the years...
