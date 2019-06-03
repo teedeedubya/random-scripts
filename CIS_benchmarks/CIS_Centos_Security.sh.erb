@@ -1,0 +1,229 @@
+#!/bin/bash
+# Managed by Puppet
+# Description:
+# This script enables me to place something much simpler inside of sudo...
+# This script does several misc commands in an effort to be compliant
+# with CIS CentOS Security Benchmarks on a scheduled/automated basis.
+#
+# CIS Centos Security Benchmarks addressed with this script:
+# 7.2, 9.2.2, 9.2.3, 9.2.4, 9.2.5, 9.2.6, 9.2.7, 9.2.9, 9.2.11,
+# 9.2.12, 9.2.13, 9.2.14, 9.2.15, 9.2.16, 9.2.17, 9.2.18, 9.2.19
+#
+# Author: Tony Welder
+# Email: tony.wvoip@gmail.com
+
+###############
+## Variables ##
+###############
+GREP='/bin/grep'
+WC='/usr/bin/wc'
+AWK='/bin/awk'
+SORT='/bin/sort'
+UNIQ='/usr/bin/uniq'
+EGREP='/bin/egrep'
+CUT='/bin/cut'
+CAT='/bin/cat'
+LS='/bin/ls'
+STAT='/usr/bin/stat'
+ID='/usr/bin/id'
+SED='/bin/sed'
+
+KEY="$1"
+
+case $KEY in
+  --check_enabled_system_accounts)
+    # CIS Centos Benchmark 7.2
+    $EGREP -v "^\+" /etc/passwd | $AWK -F: '($1!="root" && $1!="mysql" && $1!="sync" && $1!="shutdown" && $1!="halt" && $1!="shiny" && $1!="lce" && $1!="jenkins" && $3<500 && $7!="/sbin/nologin") {print}' | $WC -l
+  ;;
+  --legacy_passwd_entries)
+    # CIS Centos Benchmark: 9.2.2
+    $GREP '^+:' /etc/passwd | $WC -l
+  ;;
+  --legacy_shadow_entries)
+    # CIS Centos Benchmark: 9.2.3
+    # option requires sudo root privs
+    $GREP '^+:' /etc/shadow | $WC -l
+  ;;
+  --legacy_group_entries)
+    # CIS Centos Benchmark 9.2.4
+    $GREP '^+:' /etc/group | $WC -l
+  ;;
+  --users_with_uid_0)
+    # CIS Centos Benchmark 9.2.5
+    $GREP :x:0: /etc/passwd | $WC -l
+  ;;
+    --check_root_path)
+    # CIS Centos Benchmark 9.2.6
+    if [ "`echo $PATH | $GREP :: `" != "" ]; then
+      echo "Empty Directory in PATH (::)"
+    fi
+    if [ "`echo $PATH | $GREP :$`" != "" ]; then
+      echo "Trailing : in PATH"
+    fi
+      p=`echo $PATH | $SED -e 's/::/:/' -e 's/:$//' -e 's/:/ /g'`
+      set -- $p
+      while [ "$1" != "" ]; do
+        if [ "$1" = "." ]; then
+          echo "PATH contains ."
+        shift
+        continue
+        fi
+        if [ -d $1 ]; then
+          dirperm=`$LS -ldH $1 | $CUT -f1 -d" "`
+          if [ `echo $dirperm | $CUT -c6 ` != "-" ]; then
+            echo "Group Write permission set on directory $1"
+          fi
+          if [ `echo $dirperm | $CUT -c9 ` != "-" ]; then
+            echo "Other Write permission set on directory $1"
+          fi
+          dirown=`$LS -ldH $1 | $AWK '{print $3}'`
+          if [ "$dirown" != "root" ] ; then
+            echo $1 is not owned by root
+          fi
+        else
+          echo $1 is not a directory
+        fi
+      shift
+    done
+  ;;
+  --check_home_dir_perm)
+    # CIS Centos Benchmark 9.2.7
+    for dir in `$CAT /etc/passwd | $EGREP -v '(root|halt|sync|shutdown|/sbin/nologin|tomcat|wso2is|oracle|/var/www|mysql)' | $AWK -F: '{ print $6 }'`; do
+      dirperm=`$LS -ld $dir | $CUT -f1 -d" "`
+      if [ `echo $dirperm | $CUT -c6 ` != "-" ]; then
+        echo "Group Write permission set on directory $dir"
+      fi
+      if [ `echo $dirperm | $CUT -c8 ` != "-" ]; then
+        echo "Other Read permission set on directory $dir"
+      fi
+      if [ `echo $dirperm | $CUT -c9 ` != "-" ]; then
+        echo "Other Write permission set on directory $dir"
+      fi
+      if [ `echo $dirperm | $CUT -c10 ` != "-" ]; then
+        echo "Other Execute permission set on directory $dir"
+      fi
+    done
+  ;;
+  --check_netrc_file)
+   # CIS Centos Benchmark 9.2.8, 9.2.18
+   for dir in `$CAT /etc/passwd | $EGREP -v '(root|sync|halt|shutdown)' | $AWK -F: '($7 != "/sbin/nologin") { print $6 }'`; do
+     for file in $dir/.netrc; do
+       if [ ! -h "$file" -a -f "$file" ]; then
+         echo ".netrc file $dir/.netrc exists"
+         fileperm=`$LS -ld $file | $CUT -f1 -d" "`
+         if [ `echo $fileperm | $CUT -c5 ` != "-" ]; then
+           echo "Group Read set on $file"
+         fi
+         if [ `echo $fileperm | $CUT -c6 ` != "-" ]; then
+           echo "Group Write set on $file"
+         fi
+         if [ `echo $fileperm | $CUT -c7 ` != "-" ]; then
+           echo "Group Execute set on $file"
+         fi
+         if [ `echo $fileperm | $CUT -c8 ` != "-" ]; then
+           echo "Other Read set on $file"
+         fi
+         if [ `echo $fileperm | $CUT -c9 ` != "-" ]; then
+           echo "Other Write set on $file"
+         fi
+         if [ `echo $fileperm | $CUT -c10 ` != "-" ]; then
+           echo "Other Execute set on $file"
+         fi
+       fi
+     done
+    done
+  ;;
+  --check_passwd_group_match)
+    #CIS Centos Benchmark 9.2.11
+    NUM_OF_MISMATCHES=0
+    for i in $($CUT -s -d: -f4 /etc/passwd | $SORT -u ); do
+      $GREP -q -P "^.*?:x:$i:" /etc/group
+      if [ $? -ne 0 ]; then
+        ((NUM_OF_MISMATCHES++))
+      fi
+    done
+    echo $NUM_OF_MISMATCHES
+  ;;
+  --check_valid_home_dir)
+    #CIS Centos Benchmark 9.2.12
+    $CAT /etc/passwd | $AWK -F: '{ print $1 " " $3 " " $6 }' | while read user uid dir; do
+      if [ $uid -ge 500 -a ! -d "$dir" -a $user != "nfsnobody" ]; then
+        echo "The home directory ($dir) of user $user does not exist."
+      fi
+    done
+  ;;
+  --check_home_dir_ownership)
+    #CIS Centos Benchmark 9.2.13
+    $CAT /etc/passwd | $AWK -F: '{ print $1 " " $3 " " $6 }' | while read user uid dir; do
+      if [ $uid -ge 500 -a -d "$dir" -a $user != "nfsnobody" ]; then
+        owner=$($STAT -L -c "%U" "$dir")
+        if [ "$owner" != "$user" ] && [ "$owner" != "root" ]; then
+          echo "The home directory ($dir) of user $user is owned by $owner."
+        fi
+      fi
+    done
+    #Because we have LDAP integration, we also need to check /home/
+    for dir in `$LS /home/`; do
+      id_output=`$ID $dir 2> /dev/null`
+      id_return_code="$?"
+      if [ $id_return_code -ne 0 ]; then
+        echo "user ${dir} for home directory /home/${dir} no longer exists"
+      elif [[ "$dir" != $($STAT --format=%U /home/${dir}) ]]; then
+        echo "Home directory /home/${dir} should be not owned by $($STAT --format=%U /home/${dir})"
+      fi
+    done
+  ;;
+  --check_duplicate_uids)
+    # CIS Centos Benchmark 9.2.14
+    $AWK -F: '{print $3}' /etc/passwd | $SORT | $UNIQ -D | $WC -l
+  ;;
+  --check_duplicate_gids)
+    # CIS Centos Benchmark 9.2.15
+    $AWK -F: '{print $3}' /etc/group | $SORT | $UNIQ -D | $WC -l
+  ;;
+  --check_duplicate_users)
+    # CIS Centos Benchmark 9.2.16
+    $AWK -F: '{print $1}' /etc/passwd | $SORT | $UNIQ -D | $WC -l
+  ;;
+  --check_duplicate_groups)
+    # CIS Centos Benchmark 9.2.17
+    $AWK -F: '{print $1}' /etc/group | $SORT | $UNIQ -D | $WC -l
+  ;;
+  --check_forward_file)
+    # CIS Centos Benchmark 9.2.19
+    # checks local user home dirs for .forward file
+    for dir in `$CAT /etc/passwd | $AWK -F: '{ print $6 }'`; do
+      if [ -e "$dir/.forward" ]; then
+        echo ".forward file $dir/.forward exists"
+      fi
+    done
+    # checks for users added through active directory
+    for home_dir in `$LS /home/`; do
+      if [ -e "/home/$home_dir/.forward" ]; then
+        echo ".forward file $home_dir/.forward exists"
+      fi
+    done
+  ;;
+  *)
+    echo "Invalid Argument"
+    echo "---------Valid arguments-------"
+    echo "--legacy_passwd_entries : Returns the number of legacy entries in /etc/passwd"
+    echo "--legacy_shadow_entries : Returns the number of legacy entries in /etc/shadow (requires root privs)"
+    echo "--legacy_group_entries : Returns the number of legacy entries in /etc/group"
+    echo "--users_with_uid_0 : Returns the number of users with a UID of 0 in /etc/passwd"
+    echo "--check_duplicate_gids : Returns the number of duplicate GIDs in /etc/group"
+    echo "--check_duplicate_uids : Returns the number of duplicate UIDs in /etc/passwd"
+    echo "--check_duplicate_users : Returns the number of duplicate users in /etc/passwd"
+    echo "--check_duplicate_groups : Returns the number of duplicate users in /etc/group"
+    echo "--check_enabled_system_accounts : Returns the number systems accounts without a nologin shell from /etc/passwd"
+    echo "--check_passwd_group_match : Returns the number of mismatched groups between /etc/group and /etc/passwd"
+    echo "--check_home_dir_perm : Returns a list of home directory permission violations"
+    echo "--check_home_dir_ownership : Returns a list of home directories out of compliance"
+    echo "--check_valid_home_dir : Returns a list of users without a valid home directory"
+    echo "--check_forward_file : Checks for the presence of a .foward file in user's home dirs (requires root privs)"
+    echo "--check_root_path : Checks root path integrity (requires root privs)"
+    echo "--check_netrc_file : Checks for the existence and weather the file has the right permissions (requires root privs)"
+	echo ""
+    echo "example usage: ./CIS_Centos_Security.sh --legacy_passwd_entries"
+  ;;
+esac
